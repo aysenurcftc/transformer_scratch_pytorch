@@ -20,6 +20,7 @@ model = get_model(
 
 # Load the trained weights
 model_filename = latest_weights_file_path(config)
+
 state = torch.load(model_filename, map_location=device, weights_only=True)
 model.load_state_dict(state["model_state_dict"])
 model.eval()
@@ -34,6 +35,6 @@ def perform_translation(sentence: str):
 
 
 # Example usage
-input_sentence = "I like reading books."
+input_sentence = "I have a dream."
 translated_sentence = perform_translation(input_sentence)
 print(f"Input: {input_sentence}\nTranslation: {translated_sentence}")

@@ -5,7 +5,7 @@ def get_config():
     return {
         "project_name": "transformer-translation",
         "batch_size": 16,
-        "num_epochs": 25,
+        "num_epochs": 26,
         "lr": 1e-4,
         "seq_len": 350,
         "d_model": 512,

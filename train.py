@@ -23,43 +23,57 @@ import wandb
 from utils import setup_device
 
 
-def greedy_decode(
-    model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device
+
+def beam_search_decode(
+    model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, beams, device
 ):
     sos_idx = tokenizer_tgt.token_to_id("[SOS]")
     eos_idx = tokenizer_tgt.token_to_id("[EOS]")
 
     # Precompute the encoder output and reuse it for every step
     encoder_output = model.encode(source, source_mask)
-    # Initialize the decoder input with the sos token
-    decoder_input = torch.empty(1, 1).fill_(sos_idx).type_as(source).to(device)
-    while True:
-        if decoder_input.size(1) == max_len:
+
+    # Initialize sequences with the SOS token and score 0
+    sequences = [
+        (torch.empty(1, 1).fill_(sos_idx).type_as(source).to(device), 0)
+    ]  # (token sequence, score)
+
+    for _ in range(max_len):
+        all_candidates = []
+
+        # Iterate through all sequences
+        for seq, score in sequences:
+            # Build mask for target
+            decoder_mask = causal_mask(seq.size(1)).type_as(source_mask).to(device)
+
+            # Calculate output
+            out = model.decode(encoder_output, source_mask, seq, decoder_mask)
+
+            # Get the probability distribution for the next token
+            prob = model.project(out[:, -1])
+
+            # Get the top `beams` tokens
+            top_token_ids = torch.topk(prob, beams).indices
+
+            # For each candidate token, calculate its score and append it to the candidate list
+            for token_id in top_token_ids.squeeze(0):
+                token_score = torch.log(
+                    prob[0, token_id]
+                )  # log probability for the token
+                new_score = score + token_score.item()
+                new_seq = torch.cat([seq, token_id.unsqueeze(0).unsqueeze(0)], dim=1)
+                all_candidates.append((new_seq, new_score))
+
+        # Select the top `beams` sequences based on their scores
+        sequences = sorted(all_candidates, key=lambda x: x[1], reverse=True)[:beams]
+
+        # If all top sequences end with the EOS token, stop early
+        if all(seq[0][0, -1] == eos_idx for seq, _ in sequences):
             break
 
-        # build mask for target
-        decoder_mask = (
-            causal_mask(decoder_input.size(1)).type_as(source_mask).to(device)
-        )
-
-        # calculate output
-        out = model.decode(encoder_output, source_mask, decoder_input, decoder_mask)
-
-        # get next token
-        prob = model.project(out[:, -1])
-        _, next_word = torch.max(prob, dim=1)
-        decoder_input = torch.cat(
-            [
-                decoder_input,
-                torch.empty(1, 1).type_as(source).fill_(next_word.item()).to(device),
-            ],
-            dim=1,
-        )
-
-        if next_word == eos_idx:
-            break
-
-    return decoder_input.squeeze(0)
+    # Return the sequence with the highest score
+    best_sequence = sequences[0][0]
+    return best_sequence.squeeze(0)
 
 
 def run_validation(
@@ -99,7 +113,7 @@ def run_validation(
             # check that the batch size is 1
             assert encoder_input.size(0) == 1, "Batch size must be 1 for validation"
 
-            model_out = greedy_decode(
+            model_out = beam_search_decode(
                 model,
                 encoder_input,
                 encoder_mask,
@@ -156,7 +170,6 @@ def get_all_sentences(ds, lang):
 def get_or_build_tokenizer(config, ds, lang):
     tokenizer_path = Path(config["tokenizer_file"].format(lang))
     if not Path.exists(tokenizer_path):
-        # Most code taken from: https://huggingface.co/docs/tokenizers/quicktour
         tokenizer = Tokenizer(WordLevel(unk_token="[UNK]"))
         tokenizer.pre_tokenizer = Whitespace()
         trainer = WordLevelTrainer(
